@@ -1,0 +1,137 @@
+# The IAM role Amplify Console's agents assume to use this AWS account through the AWS MCP Server.
+# What it allows and how to revoke it: https://github.com/amplify-security/aws-connection-template
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Access for Amplify Console's agents to this account through the AWS MCP Server, with whatever the attached managed
+  policies allow. The defaults read; credential, secret and data reads through the MCP Server are refused.
+
+Parameters:
+  AmplifyConnectorRoleArn:
+    Type: String
+    Description: Amplify's connector role, which assumes this role. Leave the default.
+    Default: arn:aws:iam::791657206107:role/amplify-console-prod-aws-connector
+    AllowedPattern: "^arn:aws:iam::791657206107:role/amplify-console-(lab|stg|prod)-aws-connector$"
+    ConstraintDescription: must be an Amplify connector role ARN.
+  ExternalId:
+    Type: String
+    Description: The external ID Amplify Console issued for this connection.
+    AllowedPattern: "^[0-9a-f]{64}$"
+    ConstraintDescription: must be 64 lowercase hexadecimal characters.
+  ManagedPolicyArns:
+    Type: CommaDelimitedList
+    Description: >-
+      Managed policies that set what Amplify's agents can do through the AWS MCP Server, writes included. The
+      template only refuses credential, secret and data reads through the MCP Server, and presigned S3 downloads. The
+      defaults, SecurityAudit and CloudWatchLogsReadOnlyAccess, give read access, including to configuration and log
+      events that often hold secrets, such as environment variables, EC2 user data and CloudFormation templates.
+    Default: arn:aws:iam::aws:policy/SecurityAudit,arn:aws:iam::aws:policy/CloudWatchLogsReadOnlyAccess
+
+Resources:
+  AmplifyConsoleAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # AmplifyConsoleAccess-<first segment of the stack ID>, so one account can hold several connections.
+      RoleName:
+        Fn::Sub:
+          - AmplifyConsoleAccess-${Suffix}
+          - Suffix:
+              Fn::Select:
+                - 0
+                - Fn::Split:
+                    - "-"
+                    - Fn::Select:
+                        - 2
+                        - Fn::Split:
+                            - /
+                            - Ref: AWS::StackId
+      Description: Assumed by Amplify Console's agents to use this account through the AWS MCP Server, with the permissions of the attached managed policies.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::791657206107:root
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId:
+                  Ref: ExternalId
+              ArnEquals:
+                aws:PrincipalArn:
+                  Ref: AmplifyConnectorRoleArn
+              StringLike:
+                sts:RoleSessionName: amplify-*
+          # Its own statement: like sts:TagSession, sts:SetSourceIdentity may not match a statement that
+          # conditions on sts:ExternalId, which would refuse every AssumeRole call that sets a source identity.
+          - Effect: Allow
+            Principal:
+              AWS: arn:aws:iam::791657206107:root
+            Action: sts:SetSourceIdentity
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn:
+                  Ref: AmplifyConnectorRoleArn
+      ManagedPolicyArns:
+        Ref: ManagedPolicyArns
+      Policies:
+        - PolicyName: AmplifyConsoleMcp
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Best effort: actions that return credentials, secrets or data, refused through the AWS MCP Server. With
+              # NoPresignedS3Downloads, the only guard; the managed policies otherwise decide what agents can do, writes
+              # included.
+              - Sid: NoCredentialOrSecretReadsThroughMcp
+                Effect: Deny
+                Action:
+                  - sts:GetSessionToken
+                  - sts:GetFederationToken
+                  - ecr:GetAuthorizationToken
+                  - ecr-public:GetAuthorizationToken
+                  - codeartifact:GetAuthorizationToken
+                  - redshift:GetClusterCredentials*
+                  - redshift-serverless:GetCredentials
+                  - ec2:GetPasswordData
+                  - lightsail:GetInstanceAccessDetails
+                  - lightsail:GetRelationalDatabaseMasterUserPassword
+                  - rds-db:connect
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:BatchGetSecretValue
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameterHistory
+                  - glue:GetConnection
+                  - glue:GetConnections
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - kms:Decrypt
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                Resource: "*"
+                Condition:
+                  Bool:
+                    aws:ViaAWSMCPService: "true"
+              # A presigned URL is redeemed directly against S3, outside the AWS MCP Server, so this deny is
+              # unconditional: no object can be downloaded with a URL this role signs.
+              - Sid: NoPresignedS3Downloads
+                Effect: Deny
+                Action: s3:GetObject*
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    s3:authType: REST-QUERY-STRING
+
+Outputs:
+  RoleArn:
+    Description: ARN of the AmplifyConsoleAccess role. Paste it into Amplify Console to finish connecting.
+    Value:
+      Fn::GetAtt:
+        - AmplifyConsoleAccessRole
+        - Arn
+  TemplateVersion:
+    Description: Version of the template this stack was created from.
+    Value: 1.0.0

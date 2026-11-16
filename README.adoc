@@ -1,0 +1,59 @@
+= Amplify Console AWS connection
+
+The IAM role that lets https://amplify.security[Amplify Console]'s agents use an AWS account through the https://docs.aws.amazon.com/aws-mcp/latest/userguide/getting-started-aws-mcp-server.html[AWS MCP Server].
+It comes as a CloudFormation template, `AmplifyConsoleAccess.yaml`, and as a Terraform module that creates the same role.
+
+== Deploy
+
+Start an AWS connection in Amplify Console.
+It gives you an external ID for the connection and a link that creates the stack with it filled in.
+Paste the stack's `RoleArn` output back into Amplify Console to finish.
+
+To deploy the template yourself:
+
+[source,shell]
+----
+aws cloudformation deploy \
+  --template-file AmplifyConsoleAccess.yaml \
+  --stack-name AmplifyConsoleAccess \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides ExternalId=<external ID>
+----
+
+With Terraform or OpenTofu, paste the module's `role_arn` output instead:
+
+[source,hcl]
+----
+module "amplify_console_access" {
+  source = "git::https://github.com/amplify-security/aws-connection-template.git?ref=v1.0.0"
+
+  external_id = "<external ID>"
+}
+----
+
+== What the role allows
+
+* *Who can assume it:* only Amplify, and only with your connection's external ID.
+Sessions last at most one hour.
+Amplify may set a source identity naming the Console user, which CloudTrail records.
+* *What it can do:* exactly what the managed policies in `ManagedPolicyArns` (`managed_policy_arns` in the module) allow, through the AWS MCP Server, writes included.
+The role is not read-only: the template refuses only the reads listed below, so if you attach a policy that allows writes, Amplify's agents can make them.
+By default agents get read access through two AWS managed read-only policies:
+** `SecurityAudit`, which reads resource configuration. That configuration often holds secrets, for example Lambda, ECS, Batch, CodeBuild, App Runner and Elastic Beanstalk environment variables, EC2 user data and launch templates, Glue job arguments and CloudFormation templates.
+** `CloudWatchLogsReadOnlyAccess`, which reads CloudWatch Logs events, so Amplify can investigate what your services logged. Log events can hold secrets too.
+It does not include `logs:Unmask`, so data masked by CloudWatch Logs data protection stays masked.
+If yours may hold secrets, pass your own policies instead.
+* *What it refuses:* calls through the AWS MCP Server to a fixed list of actions that return credentials, secrets or data:
+** credentials and passwords: STS session and federation tokens, ECR, ECR Public and CodeArtifact authorization tokens, Redshift and Redshift Serverless credentials, RDS IAM database authentication, EC2 Windows passwords, and Lightsail instance access details and database master passwords;
+** secrets: Secrets Manager secret values, Systems Manager parameters and Glue connections;
+** data: KMS decryption, ECR image manifests and layers, S3 objects and object versions, and DynamoDB items (`GetItem` and `BatchGetItem`).
+The list is best effort: it does not cover every action that returns data, such as `dynamodb:Query` or `dynamodb:Scan`, and it grants nothing.
+* *Presigned URLs:* the role refuses S3 object reads authenticated by a query string, wherever they come from, so presigned download URLs it signs don't work.
+A presigned URL is redeemed directly against S3, where the MCP Server guard above does not apply.
+Amplify does not offer its agents the AWS MCP Server's presigned-URL tool.
+
+Delete the stack, or destroy the module, to revoke access.
+
+== License
+
+MIT. See link:LICENSE[LICENSE].

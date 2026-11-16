@@ -1,0 +1,31 @@
+= Development
+
+== Requirements
+
+* OpenTofu 1.8 or later
+* cfn-lint
+
+== Testing
+
+[source,shell]
+----
+tofu init
+tofu test
+cfn-lint AmplifyConsoleAccess.yaml
+----
+
+`tofu test` checks that the module creates the same role as the template.
+It reads the template with `yamldecode`, which does not accept CloudFormation's short-form tags, so the template uses long-form intrinsic functions (`Fn::Sub`, `Ref`).
+
+== Connecting a test account
+
+The template and the module default to the production connector role.
+To connect a test account to lab or staging, set `AmplifyConnectorRoleArn` (`amplify_connector_role_arn` in the module) to `arn:aws:iam::791657206107:role/amplify-console-lab-aws-connector` or `arn:aws:iam::791657206107:role/amplify-console-stg-aws-connector`.
+
+== Releasing
+
+. Bump `TemplateVersion` in the template's outputs, following semantic versioning.
+. Deploy the template in a test account and connect it to lab.
+. Tag the merged commit `v<TemplateVersion>` and push the tag.
+The release workflow checks that the tag is on `main` and matches `TemplateVersion`, then publishes the template, its SHA-256 checksum and a build provenance attestation.
+. Pin the new version and its checksum in the ops repository's prod stack, so quick-create links serve it.
